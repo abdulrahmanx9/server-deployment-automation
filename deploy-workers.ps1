@@ -112,8 +112,8 @@ apt-get install -y $DEPENDENCIES > /dev/null
 echo "[VPS] Creating user '$APP_USER'..."
 useradd -m -s /bin/bash "$APP_USER" || true
 echo "[VPS] Setting password for '$APP_USER' and adding to sudo..."
-# CORRECTED: Used ${} to properly delimit variable names.
-echo "${APP_USER}:${APP_USER_PASSWORD}" | chpasswd
+# FIXED: Removed curly braces to prevent conflicts and command errors.
+echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
 usermod -aG sudo "$APP_USER"
 '@ -f $AppUser, $AppUserPassword, $baseDependencies
         Invoke-SshCommand -IpAddress $server.IpAddress -ScriptBlock $baseSetupScript

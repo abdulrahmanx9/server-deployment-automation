@@ -17,7 +17,7 @@ $ErrorActionPreference = "Stop"
 # --- BOT SERVICE CONTROL ---
 # Set to $true to start/restart bot services after deploying.
 # Set to $false to just deploy files without touching the services.
-$StartDiscordBots = $false
+$StartDiscordBots = $true
 
 # --- Load settings from config.json ---
 try {
@@ -127,8 +127,8 @@ apt-get install -y $DEPENDENCIES > /dev/null
 echo "[VPS] Creating user '$APP_USER'..."
 useradd -m -s /bin/bash "$APP_USER" || true
 echo "[VPS] Setting password for '$APP_USER' and adding to sudo..."
-# CORRECTED: Used ${} to properly delimit variable names.
-echo "${APP_USER}:${APP_USER_PASSWORD}" | chpasswd
+# FIXED: Removed curly braces to prevent conflicts and command errors.
+echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
 usermod -aG sudo "$APP_USER"
 '@ -f $AppUser, $AppUserPassword, $baseDependencies
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $baseSetupScript
