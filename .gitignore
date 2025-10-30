@@ -5,3 +5,5 @@ config.json
 .vscode/
 .history/
 testdb.dump
+deploy-dashboard.ps1
+141.95.67.238_x-ui.db

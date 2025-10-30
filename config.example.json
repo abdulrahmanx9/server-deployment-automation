@@ -17,7 +17,8 @@
     "LocalPaths": {
         "3xui_Db_Folder": "C:/Path/To/Your/deployment",
         "Bandwidth_Api_File": "C:/Path/To/Your/bandwidth/bandwidth.py",
-        "Bots_Db_Dump": "C:/Path/To/Your/deployment/db.dump"
+        "Bots_Db_Dump": "C:/Path/To/Your/deployment/db.dump",
+        "Dashboard_Folder": "C:/Path/To/Your/Dashboard/"
     },
     "Cloudflare": {
         "Email": "your-email@example.com",
