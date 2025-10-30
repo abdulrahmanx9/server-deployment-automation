@@ -2,11 +2,11 @@
 #
 #   MAIN SERVER - Bot & Panel Deployment
 #   Author: Abdulrahman
-#   Date: 26/08/2025
-#   Version: 24.9.7-main
+#   Date: 15/10/2025
+#   Version: 24.10.1-main
 #
 #   Deploys the main server: 3x-ui panel, bandwidth API, Discord bots,
-#   and the PostgreSQL database.
+#   and the PostgreSQL database. Includes API Key support.
 #
 # =============================================================================
 
@@ -21,7 +21,6 @@ $StartDiscordBots = $true
 
 # --- Load settings from config.json ---
 try {
-    # CORRECTED: No longer assigning to the automatic variable $PSScriptRoot.
     $configPath = Join-Path $PSScriptRoot "config.json"
     $config = Get-Content -Raw -Path $configPath | ConvertFrom-Json
 }
@@ -36,19 +35,20 @@ $MainServer = @{
     Role      = "main"
     Domain    = $config.MainServer.Domain
 }
-$SshUser                = $config.Ssh.User
-$LocalPublicKeyPath     = $config.Ssh.LocalPublicKeyPath
-$Local_3xui_Db_Folder   = $config.LocalPaths.'3xui_Db_Folder'
-$Local_Bandwidth_Path   = Split-Path -Path $config.LocalPaths.Bandwidth_Api_File
-$Local_Bots_DbPath      = $config.LocalPaths.Bots_Db_Dump
-$CloudflareEmail        = $config.Cloudflare.Email
-$CloudflareApiKey       = $config.Cloudflare.ApiKey
-$BotProjects            = $config.BotProjects
-$AppUser                = $config.App.User
-$AppUserPassword        = $config.App.Password
-$DbUser                 = $config.Database.User
-$DbPassword             = $config.Database.Password
-$DbName                 = $config.Database.Name
+$SshUser = $config.Ssh.User
+$LocalPublicKeyPath = $config.Ssh.LocalPublicKeyPath
+$Local_3xui_Db_Folder = $config.LocalPaths.'3xui_Db_Folder'
+$Local_Bandwidth_Path = Split-Path -Path $config.LocalPaths.Bandwidth_Api_File
+$Local_Bots_DbPath = $config.LocalPaths.Bots_Db_Dump
+$CloudflareEmail = $config.Cloudflare.Email
+$CloudflareApiKey = $config.Cloudflare.ApiKey
+$BotProjects = $config.BotProjects
+$AppUser = $config.App.User
+$AppUserPassword = $config.App.Password
+$DbUser = $config.Database.User
+$DbPassword = $config.Database.Password
+$DbName = $config.Database.Name
+$BandwidthApiKey = $config.BandwidthApiKey
 
 # --- Python packages needed ---
 $PythonRequirements_Bots = "aiohttp discord.py python-dotenv psycopg2 pytz PyNaCl"
@@ -56,7 +56,6 @@ $PythonRequirements_Bandwidth = "fastapi[all] psutil uvicorn"
 #endregion
 
 #region HELPER FUNCTIONS
-# CORRECTED: Renamed function to use an approved verb ('Write').
 function Write-Log {
     param(
         [Parameter(Mandatory = $true)]
@@ -64,11 +63,11 @@ function Write-Log {
         [string]$Type = "INFO"
     )
     $color = switch ($Type) {
-        "INFO"    { "Cyan" }
+        "INFO" { "Cyan" }
         "SUCCESS" { "Green" }
-        "WARN"    { "Yellow" }
-        "ERROR"   { "Red" }
-        default   { "White" }
+        "WARN" { "Yellow" }
+        "ERROR" { "Red" }
+        default { "White" }
     }
     Write-Host "[$Type] $Message" -ForegroundColor $color
 }
@@ -127,7 +126,6 @@ apt-get install -y $DEPENDENCIES > /dev/null
 echo "[VPS] Creating user '$APP_USER'..."
 useradd -m -s /bin/bash "$APP_USER" || true
 echo "[VPS] Setting password for '$APP_USER' and adding to sudo..."
-# FIXED: Removed curly braces to prevent conflicts and command errors.
 echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
 usermod -aG sudo "$APP_USER"
 '@ -f $AppUser, $AppUserPassword, $baseDependencies
@@ -209,6 +207,7 @@ try {
 set -e
 APP_USER="{0}"
 PYTHON_REQS="{1}"
+API_KEY="{2}"
 API_DIR="/home/$APP_USER/bandwidth"
 echo "[VPS] Creating directory & venv for Bandwidth API..."
 install -d -o "$APP_USER" -g "$APP_USER" "$API_DIR"
@@ -224,13 +223,14 @@ After=network.target
 User=$APP_USER
 Group=$APP_USER
 WorkingDirectory=$API_DIR
+Environment="BANDWIDTH_API_KEY=$API_KEY"
 ExecStart=$API_DIR/venv/bin/uvicorn bandwidth:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-'@ -f $AppUser, $PythonRequirements_Bandwidth
+'@ -f $AppUser, $PythonRequirements_Bandwidth, $BandwidthApiKey
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $bandwidthSetupScript
     
     Write-Log "Uploading Bandwidth API file..."
@@ -322,7 +322,6 @@ EOF
             (Join-Path $localBotPath "utils.py")
         )
         Invoke-ScpUpload -IpAddress $MainServer.IpAddress -LocalPath $filesToCopy -RemotePath $remoteBotPath
-        # CORRECTED: Used ${} to properly delimit variable names.
         Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock "chown -R ${AppUser}:${AppUser} $remoteBotPath"
         Write-Log "$botName deployment complete." -Type "SUCCESS"
     }

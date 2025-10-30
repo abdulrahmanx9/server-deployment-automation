@@ -9,6 +9,7 @@
             "Domain": "worker1.yourdomain.com"
         }
     ],
+    "BandwidthApiKey": "YourSuperSecretApiKey123",
     "Ssh": {
         "User": "root",
         "LocalPublicKeyPath": "C:/Users/YourUser/.ssh/id_ed25519.pub"
