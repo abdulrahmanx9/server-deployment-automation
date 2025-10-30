@@ -4,5 +4,4 @@ config.json
 # Ignore local development files/folders
 .vscode/
 .history/
-77.90.15.105_x-ui.db
 testdb.dump
