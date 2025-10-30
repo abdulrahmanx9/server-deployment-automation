@@ -3,10 +3,10 @@
 #   MAIN SERVER - Bot & Panel Deployment
 #   Author: Abdulrahman
 #   Date: 15/10/2025
-#   Version: 24.10.1-main
+#   Version: 24.10.2-dashboard
 #
 #   Deploys the main server: 3x-ui panel, bandwidth API, Discord bots,
-#   and the PostgreSQL database. Includes API Key support.
+#   the PostgreSQL database, and the Streamlit Dashboard.
 #
 # =============================================================================
 
@@ -40,6 +40,7 @@ $LocalPublicKeyPath = $config.Ssh.LocalPublicKeyPath
 $Local_3xui_Db_Folder = $config.LocalPaths.'3xui_Db_Folder'
 $Local_Bandwidth_Path = Split-Path -Path $config.LocalPaths.Bandwidth_Api_File
 $Local_Bots_DbPath = $config.LocalPaths.Bots_Db_Dump
+$Local_Dashboard_Path = $config.LocalPaths.Dashboard_Folder
 $CloudflareEmail = $config.Cloudflare.Email
 $CloudflareApiKey = $config.Cloudflare.ApiKey
 $BotProjects = $config.BotProjects
@@ -104,6 +105,23 @@ function Invoke-ScpUpload {
         throw "SCP upload from '$LocalPath' failed."
     }
 }
+
+# --- NEW: Helper function to upload an entire directory ---
+function Invoke-ScpUploadDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$IpAddress,
+        [Parameter(Mandatory = $true)]
+        [string]$LocalDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$RemotePath
+    )
+    # Use scp's recursive -r flag to copy the directory
+    scp -r $LocalDirectory "$SshUser@$IpAddress`:$RemotePath"
+    if ($LASTEXITCODE -ne 0) {
+        throw "SCP directory upload from '$LocalDirectory' failed."
+    }
+}
 #endregion
 
 #region SCRIPT EXECUTION
@@ -111,8 +129,8 @@ Write-Log "--- STARTING DEPLOYMENT: MAIN SERVER ($($MainServer.IpAddress)) ---"
 
 # --- Step 1: Base System Setup ---
 try {
-    Write-Log "Updating system and installing base packages..."
-    $baseDependencies = "python3.12 python3.12-venv build-essential python3.12-dev libpq-dev postgresql postgresql-contrib"
+    Write-Log "Updating system and installing base packages (including Docker)..."
+    $baseDependencies = "python3.12 python3.12-venv build-essential python3.12-dev libpq-dev postgresql postgresql-contrib docker.io docker-compose"
     $baseSetupScript = @'
 #!/bin/bash
 set -e
@@ -128,6 +146,8 @@ useradd -m -s /bin/bash "$APP_USER" || true
 echo "[VPS] Setting password for '$APP_USER' and adding to sudo..."
 echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
 usermod -aG sudo "$APP_USER"
+echo "[VPS] Adding $APP_USER to docker group..."
+usermod -aG docker "$APP_USER" || true
 '@ -f $AppUser, $AppUserPassword, $baseDependencies
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $baseSetupScript
     Write-Log "Base system setup is complete." -Type "SUCCESS"
@@ -342,6 +362,82 @@ EOF
 catch {
     Write-Log "Discord bot deployment failed. ERROR: $($_.Exception.Message)" -Type "ERROR"; exit 1
 }
+
+# --- NEW: Step 7: Deploy Streamlit Dashboard ---
+try {
+    Write-Log "Deploying Streamlit Dashboard..."
+    $dashboardDomain = "dashboard.$($MainServer.Domain)"
+    $remoteDashboardPath = "/home/$AppUser/dashboard"
+    
+    # Create directory and .env file for the dashboard
+    $dashboardSetupScript = @'
+#!/bin/bash
+set -e
+APP_USER="{0}"
+REMOTE_PATH="{1}"
+DB_HOST="localhost"
+DB_PORT="5432"
+DB_NAME="{2}"
+DB_USER="{3}"
+DB_PASSWORD="{4}"
+CADDY_CONFIG="/etc/caddy/Caddyfile"
+DASHBOARD_DOMAIN="{5}"
+
+echo "[VPS] Creating directory for Dashboard..."
+install -d -o "$APP_USER" -g "$APP_USER" "$REMOTE_PATH"
+
+echo "[VPS] Creating .env file for Dashboard..."
+cat << EOF | tee "$REMOTE_PATH/.env"
+# Database Credentials
+PG_HOST=$DB_HOST
+PG_PORT=$DB_PORT
+PG_DATABASE=$DB_NAME
+PG_USER=$DB_USER
+PG_PASSWORD=$DB_PASSWORD
+EOF
+chown "$APP_USER:$APP_USER" "$REMOTE_PATH/.env"
+
+echo "[VPS] Appending Dashboard config to Caddyfile..."
+# This appends the new block to the existing Caddyfile created by 3x-ui
+cat << EOF | tee -a "$CADDY_CONFIG"
+
+# Streamlit Dashboard
+$DASHBOARD_DOMAIN {
+    reverse_proxy localhost:8501
+}
+EOF
+
+echo "[VPS] Reloading Caddy..."
+systemctl reload caddy
+'@ -f $AppUser, $remoteDashboardPath, $DbName, $DbUser, $DbPassword, $dashboardDomain
+
+    Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $dashboardSetupScript
+
+    Write-Log "Uploading Dashboard project files..."
+    # Use the new directory upload function
+    Invoke-ScpUploadDirectory -IpAddress $MainServer.IpAddress -LocalDirectory $Local_Dashboard_Path -RemotePath $remoteDashboardPath
+    
+    Write-Log "Building and starting Dashboard container..."
+    $dockerRunScript = @'
+#!/bin/bash
+set -e
+APP_USER="{0}"
+REMOTE_PATH="{1}"
+echo "[VPS] Setting correct permissions on dashboard files..."
+chown -R "$APP_USER:$APP_USER" "$REMOTE_PATH"
+echo "[VPS] Running docker-compose up as user $APP_USER..."
+# Run docker-compose as the $APP_USER
+cd "$REMOTE_PATH"
+sudo -u "$APP_USER" docker-compose up -d --build
+'@ -f $AppUser, $remoteDashboardPath
+    
+    Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $dockerRunScript
+    Write-Log "Streamlit Dashboard is deploying." -Type "SUCCESS"
+}
+catch {
+    Write-Log "Streamlit Dashboard deployment failed. ERROR: $($_.Exception.Message)" -Type "ERROR"; exit 1
+}
+# --- END OF NEW STEP ---
 
 Write-Log "MAIN SERVER DEPLOYMENT FINISHED!" -Type "SUCCESS"
 #endregion
