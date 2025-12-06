@@ -3,7 +3,7 @@
 #   MAIN SERVER - Full Stack Deployment
 #   Author: Abdulrahman
 #   Date: 13/11/2025
-#   Version: 25.0.0-Final-Release
+#   Version: 25.1.0
 #
 #   Deploys: 
 #   1. System Dependencies & Docker
@@ -20,7 +20,6 @@
 $ErrorActionPreference = "Stop"
 
 # --- BOT SERVICE CONTROL ---
-# Set to $true to start/restart bot services after deploying.
 $StartDiscordBots = $true
 
 # --- Load settings from config.json ---
@@ -98,8 +97,9 @@ Write-Log "--- STARTING DEPLOYMENT: MAIN SERVER ($($MainServer.IpAddress)) ---"
 
 # --- Step 1: Base System Setup ---
 try {
-    Write-Log "1. Updating system and installing base packages..."
-    $baseDependencies = "python3.12 python3.12-venv build-essential python3.12-dev libpq-dev postgresql postgresql-contrib docker.io docker-compose"
+    Write-Log "1. Updating system and installing Docker (Official V2)..."
+    $baseDependencies = "python3.12 python3.12-venv build-essential python3.12-dev libpq-dev postgresql postgresql-contrib ca-certificates curl gnupg lsb-release"
+    
     $baseSetupScript = @'
 #!/bin/bash
 set -e
@@ -108,13 +108,29 @@ APP_USER_PASSWORD="{1}"
 DEPENDENCIES="{2}"
 apt-get update -y > /dev/null
 apt-get install -y $DEPENDENCIES > /dev/null
+echo "[VPS] Removing old Docker packages..."
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do apt-get remove -y $pkg || true; done
+echo "[VPS] Setting up Docker repository..."
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
+chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+apt-get update -y > /dev/null
+echo "[VPS] Installing Docker Engine and Compose Plugin..."
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 useradd -m -s /bin/bash "$APP_USER" || true
 echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
 usermod -aG sudo "$APP_USER"
 usermod -aG docker "$APP_USER" || true
+
+systemctl enable --now docker
 '@ -f $AppUser, $AppUserPassword, $baseDependencies
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $baseSetupScript
-    Write-Log "Base system setup complete." -Type "SUCCESS"
+    Write-Log "Base system and Docker V2 setup complete." -Type "SUCCESS"
 }
 catch { Write-Log "Base setup failed: $($_.Exception.Message)" -Type "ERROR"; exit 1 }
 
@@ -248,8 +264,10 @@ set -e
 APP_USER="{0}"
 REMOTE_PATH="{1}"
 BOT_NAME="{2}"
+
 install -d -o "$APP_USER" -g "$APP_USER" "$REMOTE_PATH"
 sudo -u "$APP_USER" python3.12 -m venv "$REMOTE_PATH/venv"
+
 cat << EOF | tee "/etc/systemd/system/$BOT_NAME.service"
 [Unit]
 Description=Discord Bot - $BOT_NAME
@@ -266,35 +284,55 @@ EOF
 '@ -f $AppUser, $remoteBotPath, $botName
         Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $botSetupScript
         
-        # Upload specific files
         $filesToCopy = @(
             (Join-Path $localBotPath ".env"), (Join-Path $localBotPath "$($botName)bot.py"),
             (Join-Path $localBotPath "utils.py"), (Join-Path $localBotPath "db.py"),
             (Join-Path $localBotPath "models.py"), (Join-Path $localBotPath "requirements.txt"),
-            (Join-Path $localBotPath "fuckingfast.py")
+            (Join-Path $localBotPath "fuckingfast.py"), (Join-Path $localBotPath "api.py")
         )
         Invoke-ScpUpload -IpAddress $MainServer.IpAddress -LocalPath $filesToCopy -RemotePath $remoteBotPath
         
-        # Install Requirements
-        $installScript = @'
+        $installAndApiScript = @'
 #!/bin/bash
 set -e
 APP_USER="{0}"
 REMOTE_PATH="{1}"
+BOT_NAME="{2}"
+
 if [ -f "$REMOTE_PATH/requirements.txt" ]; then
     sudo -u "$APP_USER" "$REMOTE_PATH/venv/bin/pip" install -r "$REMOTE_PATH/requirements.txt" > /dev/null
 fi
 chown -R "$APP_USER:$APP_USER" "$REMOTE_PATH"
-'@ -f $AppUser, $remoteBotPath
-        Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $installScript
+
+if [ -f "$REMOTE_PATH/api.py" ]; then
+    echo "Found api.py for $BOT_NAME. Creating API service..."
+    cat << EOF | tee "/etc/systemd/system/${BOT_NAME}_api.service"
+[Unit]
+Description=API Overlay for $BOT_NAME
+After=network.target
+[Service]
+
+ExecStart=$REMOTE_PATH/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8080
+WorkingDirectory=$REMOTE_PATH
+Restart=always
+User=$APP_USER
+Group=$APP_USER
+Environment="PATH=$REMOTE_PATH/venv/bin:/usr/bin:/bin"
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable "${BOT_NAME}_api.service"
+    systemctl restart "${BOT_NAME}_api.service"
+fi
+'@ -f $AppUser, $remoteBotPath, $botName
+        Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $installAndApiScript
     }
-    
-    # Manage Services
+
     $botServices = ($botKeys | ForEach-Object { "${_}.service" }) -join " "
     $cmd = "systemctl daemon-reload; systemctl enable $botServices"
     if ($StartDiscordBots) { $cmd += "; systemctl restart $botServices" }
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $cmd
-    Write-Log "Bots deployed." -Type "SUCCESS"
+    Write-Log "Bots (and API if present) deployed." -Type "SUCCESS"
 }
 catch { Write-Log "Bot deployment failed: $($_.Exception.Message)" -Type "ERROR"; exit 1 }
 
@@ -356,10 +394,9 @@ fi
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $dashboardSetupScript
 
     Write-Log "Uploading Dashboard files..."
-    # Clear old files
+
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock "rm -rf $remoteDashboardPath/*"
-    
-    # Upload ONLY specific files (Avoids local venv junk)
+
     $dashboardFiles = @(
         "dashboard.py", 
         "docker-compose.yml", 
@@ -378,11 +415,8 @@ APP_USER="{0}"
 REMOTE_PATH="{1}"
 chown -R "$APP_USER:$APP_USER" "$REMOTE_PATH"
 cd "$REMOTE_PATH"
-if docker compose version >/dev/null 2>&1; then
-    sudo -u "$APP_USER" docker compose up -d --build
-else
-    sudo -u "$APP_USER" docker-compose up -d --build
-fi
+echo "[VPS] Running Docker Compose..."
+sudo -u "$APP_USER" docker compose up -d --build
 '@ -f $AppUser, $remoteDashboardPath
     
     Invoke-SshCommand -IpAddress $MainServer.IpAddress -ScriptBlock $dockerRunScript
